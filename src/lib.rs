@@ -30,6 +30,27 @@ println!("{}", cert.serialize_private_key_pem());
 #![deny(missing_docs)]
 #![allow(clippy::complexity, clippy::style, clippy::pedantic)]
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(all(feature = "std", feature = "sgx"))]
+compile_error!("feature \"std\" and feature \"sgx\" cannot be enabled at the same time");
+
+#[cfg(all(not(feature = "std"), feature = "sgx"))]
+#[macro_use]
+extern crate sgx_tstd as std;
+
+// re-export module to properly feature gate sgx and regular std environment
+#[cfg(all(not(feature = "std"), feature = "sgx"))]
+pub use yasna_sgx as yasna;
+#[cfg(all(not(feature = "std"), feature = "sgx", feature = "pem"))]
+extern crate pem_sgx as pem;
+#[cfg(all(not(feature = "std"), feature = "sgx"))]
+pub use chrono_sgx as chrono;
+#[cfg(all(not(feature = "std"), feature = "sgx"))]
+pub use ring_sgx as ring;
+
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
+
 use yasna::Tag;
 use yasna::models::ObjectIdentifier;
 #[cfg(feature = "pem")]
@@ -43,7 +64,6 @@ use ring::signature::{self, EcdsaSigningAlgorithm, EdDSAParameters};
 use yasna::DERWriter;
 use yasna::models::{GeneralizedTime, UTCTime};
 use yasna::tags::{TAG_BMPSTRING, TAG_TELETEXSTRING, TAG_UNIVERSALSTRING};
-use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 use std::collections::HashMap;
 use std::fmt;
 use std::convert::TryFrom;
@@ -51,6 +71,7 @@ use std::error::Error;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::hash::{Hash, Hasher};
+use std::{borrow::ToOwned, boxed::Box, string::{String, ToString}, vec, vec::Vec};
 
 /// A self signed certificate together with signing keys
 pub struct Certificate {
@@ -616,8 +637,8 @@ impl CertificateSigningRequest {
 #[non_exhaustive]
 pub struct CertificateParams {
 	pub alg :&'static SignatureAlgorithm,
-	pub not_before :OffsetDateTime,
-	pub not_after :OffsetDateTime,
+	pub not_before :DateTime<Utc>,
+	pub not_after :DateTime<Utc>,
 	pub serial_number :Option<u64>,
 	pub subject_alt_names :Vec<SanType>,
 	pub distinguished_name :DistinguishedName,
@@ -794,9 +815,9 @@ impl CertificateParams {
 			// Write validity
 			writer.next().write_sequence(|writer| {
 				// Not before
-				write_dt_utc_or_generalized(writer.next(), self.not_before);
+				write_dt_utc_or_generalized(writer.next(), &self.not_before)?;
 				// Not after
-				write_dt_utc_or_generalized(writer.next(), self.not_after);
+				write_dt_utc_or_generalized(writer.next(), &self.not_after)?;
 				Ok::<(), RcgenError>(())
 			})?;
 			// Write subject
@@ -1194,35 +1215,33 @@ pub enum KeyIdMethod {
 /// This helper function serves two purposes: first, so that you don't
 /// have to import the time crate yourself in order to specify date
 /// information, second so that users don't have to type unproportionately
-/// long code just to generate an instance of [`OffsetDateTime`].
-pub fn date_time_ymd(year :i32, month :u8, day :u8) -> OffsetDateTime {
-	let month = Month::try_from(month).expect("out-of-range month");
-	let primitive_dt = PrimitiveDateTime::new(
-		Date::from_calendar_date(year, month, day).expect("invalid or out-of-range date"),
-		Time::MIDNIGHT
-	);
-	primitive_dt.assume_utc()
+/// long code just to generate an instance of  [`DateTime<Utc>`].
+pub fn date_time_ymd(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+	let naive_dt = NaiveDate::from_ymd(year, month, day).and_hms_milli(0, 0, 0, 0);
+	DateTime::<Utc>::from_utc(naive_dt, Utc)
 }
 
-fn dt_strip_nanos(dt :OffsetDateTime) -> OffsetDateTime {
-	// Set nanoseconds to zero
+fn dt_strip_nanos(dt: &DateTime<Utc>, allow_leap: bool) -> Result<DateTime<Utc>, RcgenError> {
+	// Set nanoseconds to zero (or to one leap second if there is a leap second)
 	// This is needed because the GeneralizedTime serializer would otherwise
 	// output fractional values which RFC 5280 explicitly forbode [1].
 	// UTCTime cannot express fractional seconds or leap seconds
 	// therefore, it needs to be stripped of nanoseconds fully.
 	// [1]: https://tools.ietf.org/html/rfc5280#section-4.1.2.5.2
-	// TODO: handle leap seconds if dt becomes leap second aware
-	let time = Time::from_hms(dt.hour(), dt.minute(), dt.second())
-		.expect("invalid or out-of-range time");
-	dt.replace_time(time)
+	let nanos = if dt.nanosecond() >= 1_000_000_000 && allow_leap {
+		1_000_000_000
+	} else {
+		0
+	};
+	dt.with_nanosecond(nanos).ok_or(RcgenError::Time)
 }
 
-fn dt_to_generalized(dt :OffsetDateTime) -> GeneralizedTime {
-	let date_time = dt_strip_nanos(dt);
-	GeneralizedTime::from_datetime(date_time)
+fn dt_to_generalized(dt: &DateTime<Utc>) -> Result<GeneralizedTime, RcgenError> {
+	let date_time = dt_strip_nanos(dt, true)?;
+	Ok(GeneralizedTime::from_datetime::<Utc>(&date_time))
 }
 
-fn write_dt_utc_or_generalized(writer :DERWriter, dt :OffsetDateTime) {
+fn write_dt_utc_or_generalized(writer: DERWriter, dt: &DateTime<Utc>) -> Result<(), RcgenError> {
 	// RFC 5280 requires CAs to write certificate validity dates
 	// below 2050 as UTCTime, and anything starting from 2050
 	// as GeneralizedTime [1]. The RFC doesn't say anything
@@ -1230,13 +1249,14 @@ fn write_dt_utc_or_generalized(writer :DERWriter, dt :OffsetDateTime) {
 	// them, we have to use GeneralizedTime if we want to or not.
 	// [1]: https://tools.ietf.org/html/rfc5280#section-4.1.2.5
 	if (1950..2050).contains(&dt.year()) {
-		let date_time = dt_strip_nanos(dt);
-		let ut = UTCTime::from_datetime(date_time);
+		let date_time = dt_strip_nanos(dt, false)?;
+		let ut = UTCTime::from_datetime::<Utc>(&date_time);
 		writer.write_utctime(&ut);
 	} else {
-		let gt = dt_to_generalized(dt);
+		let gt = dt_to_generalized(dt)?;
 		writer.write_generalized_time(&gt);
 	}
+	Ok(())
 }
 
 fn write_distinguished_name(writer :DERWriter, dn :&DistinguishedName) {
