@@ -2087,19 +2087,16 @@ impl zeroize::Zeroize for CertificateParams {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
 	use std::panic::catch_unwind;
 
-	fn get_times() -> [OffsetDateTime; 2] {
+	fn get_times() -> [DateTime<Utc>; 2] {
 		let dt_nanos = {
-			let date = Date::from_calendar_date(2020, Month::December, 3).unwrap();
-			let time = Time::from_hms_nano(0, 0, 1, 444).unwrap();
-			PrimitiveDateTime::new(date, time).assume_utc()
+			let date = NaiveDate::from_ymd(2020, 12, 3).and_hms_nano(0, 0, 1, 444);
+			DateTime::<Utc>::from_utc(date, Utc)
 		};
 		let dt_zero = {
-			let date = Date::from_calendar_date(2020, Month::December, 3).unwrap();
-			let time = Time::from_hms_nano(0, 0, 1, 0).unwrap();
-			PrimitiveDateTime::new(date, time).assume_utc()
+			let date = NaiveDate::from_ymd(2020, 12, 3).and_hms_nano(0, 0, 1, 0);
+			DateTime::<Utc>::from_utc(date, Utc)
 		};
 		// TODO: include leap seconds if time becomes leap second aware
 		[dt_nanos, dt_zero]
@@ -2110,14 +2107,14 @@ mod tests {
 		let times = get_times();
 
 		// No stripping - OffsetDateTime with nanos
-		let res = catch_unwind(|| UTCTime::from_datetime(times[0]));
+		let res = catch_unwind(|| UTCTime::from_datetime(&times[0]));
 		assert!(res.is_err());
 
 		// Stripping
 		for dt in times {
-			let date_time = dt_strip_nanos(dt);
-			assert_eq!(date_time.time().nanosecond(), 0);
-			let _ut = UTCTime::from_datetime(date_time);
+			let date_time = dt_strip_nanos(&dt, false).unwrap();
+			assert_eq!(date_time.nanosecond(), 0);
+			let _ut = UTCTime::from_datetime(&date_time);
 		}
 	}
 
@@ -2126,7 +2123,7 @@ mod tests {
 		let times = get_times();
 
 		for dt in times {
-			let _gt = dt_to_generalized(dt);
+			let _gt = dt_to_generalized(&dt);
 		}
 	}
 
