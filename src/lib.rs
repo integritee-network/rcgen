@@ -35,25 +35,38 @@ println!("{}", cert.serialize_private_key_pem());
 #[cfg(all(feature = "std", feature = "sgx"))]
 compile_error!("feature \"std\" and feature \"sgx\" cannot be enabled at the same time");
 
+#[cfg(all(not(feature = "std"), feature = "pem"))]
+compile_error!("feature \"pem\" can't be enabled without \"std\". Use \"pem_sgx\" instead.");
+
+#[cfg(all(feature = "std", feature = "pem_sgx"))]
+compile_error!("feature \"pem_sgx\" can't be enabled with \"std\". Use \"pem\" instead.");
+
 #[cfg(all(not(feature = "std"), feature = "sgx"))]
 #[macro_use]
 extern crate sgx_tstd as std;
 
-// re-export module to properly feature gate sgx and regular std environment
+/// Re-export module to properly feature gate sgx and regular std environment
 #[cfg(all(not(feature = "std"), feature = "sgx"))]
-pub use yasna_sgx as yasna;
-#[cfg(all(not(feature = "std"), feature = "sgx", feature = "pem"))]
-extern crate pem_sgx as pem;
+pub mod sgx_reexport_prelude {
+	pub use yasna_sgx as yasna;
+	pub use chrono_sgx as chrono;
+	pub use ring_sgx as ring;
+
+	#[cfg(feature = "pem_sgx")]
+	pub use pem_sgx_dep as pem;
+}
+
 #[cfg(all(not(feature = "std"), feature = "sgx"))]
-pub use chrono_sgx as chrono;
-#[cfg(all(not(feature = "std"), feature = "sgx"))]
-pub use ring_sgx as ring;
+use crate::sgx_reexport_prelude::*;
+
+#[cfg(all(feature = "std", feature = "pem"))]
+extern crate pem_std as pem;
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 
 use yasna::Tag;
 use yasna::models::ObjectIdentifier;
-#[cfg(feature = "pem")]
+#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 use pem::Pem;
 use std::convert::TryInto;
 use ring::digest;
@@ -622,7 +635,7 @@ impl CertificateSigningRequest {
 	/// Serializes the requested certificate, signed with another certificate's key, to the ASCII PEM format
 	///
 	/// *This function is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn serialize_pem_with_signer(&self, ca :&Certificate) -> Result<String, RcgenError> {
 		let p = Pem {
 			tag : "CERTIFICATE".to_string(),
@@ -1360,7 +1373,7 @@ impl Certificate {
 	/// Serializes the certificate to the ASCII PEM format
 	///
 	/// *This function is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn serialize_pem(&self) -> Result<String, RcgenError> {
 		let p = Pem {
 			tag : "CERTIFICATE".to_string(),
@@ -1371,7 +1384,7 @@ impl Certificate {
 	/// Serializes the certificate, signed with another certificate's key, to the ASCII PEM format
 	///
 	/// *This function is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn serialize_pem_with_signer(&self, ca :&Certificate) -> Result<String, RcgenError> {
 		let p = Pem {
 			tag : "CERTIFICATE".to_string(),
@@ -1382,7 +1395,7 @@ impl Certificate {
 	/// Serializes the certificate signing request to the ASCII PEM format
 	///
 	/// *This function is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn serialize_request_pem(&self) -> Result<String, RcgenError> {
 		let p = Pem {
 			tag : "CERTIFICATE REQUEST".to_string(),
@@ -1401,7 +1414,7 @@ impl Certificate {
 	/// Panics if called on a remote key pair.
 	///
 	/// *This function is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn serialize_private_key_pem(&self) -> String {
 		self.key_pair.serialize_pem()
 	}
@@ -1460,7 +1473,7 @@ impl KeyPair {
 	/// Parses the key pair from the ASCII PEM format
 	///
 	/// *This constructor is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn from_pem(pem_str :&str) -> Result<Self, RcgenError> {
 		let private_key = pem::parse(pem_str)?;
 		let private_key_der :&[_] = &private_key.contents;
@@ -1483,7 +1496,7 @@ impl KeyPair {
 	/// Same as [from_pem_and_sign_algo](Self::from_pem_and_sign_algo).
 	///
 	/// *This constructor is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn from_pem_and_sign_algo(pem_str :&str, alg :&'static SignatureAlgorithm) -> Result<Self, RcgenError> {
 		let private_key = pem::parse(pem_str)?;
 		let private_key_der :&[_] = &private_key.contents;
@@ -1592,7 +1605,7 @@ pub enum RcgenError {
 	CertificateKeyPairMismatch,
 	/// Time conversion related errors
 	Time,
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	/// Error from the pem crate
 	///
 	/// *This variant is only available if rcgen is built with the "pem" feature*
@@ -1624,7 +1637,7 @@ impl fmt::Display for RcgenError {
 
 			Time => write!(f, "Time error")?,
 			RemoteKeyError => write!(f, "Remote key error")?,
-			#[cfg(feature = "pem")]
+			#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 			PemError(e) => write!(f, "PEM error: {}", e)?,
 		};
 		Ok(())
@@ -1645,7 +1658,7 @@ impl From<ring::error::KeyRejected> for RcgenError {
 	}
 }
 
-#[cfg(feature = "pem")]
+#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 impl From<pem::PemError> for RcgenError {
 	fn from(e :pem::PemError) -> Self {
 		RcgenError::PemError(e)
@@ -1770,7 +1783,7 @@ impl KeyPair {
 	/// The returned string can be interpreted with `openssl pkey --inform PEM -pubout -pubin -text`
 	///
 	/// *This function is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn public_key_pem(&self) -> String {
 		let p = Pem {
 			tag : "PUBLIC KEY".to_string(),
@@ -1791,7 +1804,7 @@ impl KeyPair {
 	/// Serializes the key pair (including the private key) in PKCS#8 format in PEM
 	///
 	/// *This function is only available if rcgen is built with the "pem" feature*
-	#[cfg(feature = "pem")]
+	#[cfg(any(feature = "pem", feature = "pem_sgx"))]
 	pub fn serialize_pem(&self) -> String {
 		let p = Pem {
 			tag : "PRIVATE KEY".to_string(),
